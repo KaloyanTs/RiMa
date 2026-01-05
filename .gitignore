@@ -1,0 +1,17 @@
+*.txt
+/*.csv
+*/runs/*
+*.pdf
+
+# python
+__pycache__/
+*.pyc
+
+# training artifacts
+**/checkpoint-*/
+**/runs/
+*.log
+
+# common local stuff
+.vscode/
+.DS_Store
