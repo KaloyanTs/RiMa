@@ -1,0 +1,16 @@
+##########################################################################################
+TEST RESULTS (ABAB all-endings accuracy)
+##########################################################################################
+Samples: 500
+All-four OK accuracy BASE: 0.000
+Per-position OK rates:
+  line1: 0.076
+  line2: 0.058
+  line3: 0.048
+  line4: 0.068
+All-four OK accuracy TUNED: 0.994
+Per-position OK rates:
+  line1: 1.000
+  line2: 1.000
+  line3: 0.998
+  line4: 0.996

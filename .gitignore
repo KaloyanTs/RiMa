@@ -5,6 +5,7 @@
 *.csv*
 
 !requirements.txt
+!results/*
 
 # python
 __pycache__/

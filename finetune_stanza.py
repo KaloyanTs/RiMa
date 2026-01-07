@@ -17,6 +17,11 @@
 #       1) Loads the tuned adapter from OUTPUT_DIR/final
 #       2) Runs the same 4-step ABAB demo (no training)
 #
+#   - MODE="test":
+#       1) Loads the tuned adapter from OUTPUT_DIR/final
+#       2) Evaluates N random ABAB generations and reports accuracy
+#          (share of samples where ALL FOUR line endings match the required words)
+#
 # The ABAB generation recipe (4 calls)
 # -----------------------------------
 # 1) given ending <x1>  -> generate line1 ending exactly with x1
@@ -45,7 +50,7 @@ from peft import LoraConfig, get_peft_model, PeftModel
 # =========================
 # CONSTANTS
 # =========================
-MODE = "generate"  # "finetune" or "generate"
+MODE = "test"  # "finetune" | "generate" | "test"
 
 # Data locations
 POEMS_DIR = "chitanka_poems_step1"
@@ -110,6 +115,9 @@ GEN_TEMPERATURE = 0.9
 GEN_TOP_P = 0.95
 GEN_REPETITION_PENALTY = 1.12
 GEN_NO_REPEAT_NGRAM = 3
+
+# Test
+TEST_SAMPLES = 500  # None -> use GEN_COUNT; else override number of test trials
 
 # Rhyme picking
 MIN_BUCKET = 4  # require buckets at least this big
@@ -897,6 +905,100 @@ def run_generation_demo(model, tokenizer, rhyme_bucket: Dict[str, List[str]], ti
             f.write("=" * 80 + "\n")
 
 
+def run_accuracy_test(base_model, tuned_model, tokenizer, rhyme_bucket: Dict[str, List[str]], samples: int) -> Dict[str, Any]:
+    """
+    Runs accuracy evaluation over `samples` trials.
+    Accuracy is defined as the fraction of trials where all four line endings are correct.
+    Also reports per-position success rates.
+    """
+    base_model.eval()
+    tuned_model.eval()
+    trials = 0
+    base_allok = 0
+    tuned_allok = 0
+    base_pos_ok = [0, 0, 0, 0]
+    tuned_pos_ok = [0, 0, 0, 0]
+
+    for i in range(samples):
+        picked = pick_x_y_pairs(rhyme_bucket)
+        if not picked:
+            LOG.warning("[test] Could not pick rhyme pairs (check MIN_BUCKET / dictionary). Stopping.")
+            break
+        x1, x2, y1, y2 = picked
+        LOG.info(f"[test] sample {i+1}/{samples} picked x=({x1},{x2}) y=({y1},{y2})")
+
+        lines, oks = generate_abab_4step(base_model, tokenizer, x1, x2, y1, y2)
+        targets = [x1, y1, x2, y2]
+        trials += 1
+        for j, ok in enumerate(oks):
+            if ok:
+                base_pos_ok[j] += 1
+        # per-step logs with expected endings
+        for j, (ln, ok, tgt) in enumerate(zip(lines, oks, targets)):
+            status = "OK" if ok else "FAIL"
+            LOG.info(f"[base  test]   step {j+1}: {status} expected='{tgt}' line='{ln}'")
+
+        if all(oks):
+            base_allok += 1
+            
+        lines, oks = generate_abab_4step(tuned_model, tokenizer, x1, x2, y1, y2)
+        targets = [x1, y1, x2, y2]
+        for j, ok in enumerate(oks):
+            if ok:
+                tuned_pos_ok[j] += 1
+        # per-step logs with expected endings
+        for j, (ln, ok, tgt) in enumerate(zip(lines, oks, targets)):
+            status = "OK" if ok else "FAIL"
+            LOG.info(f"[tuned test]   step {j+1}: {status} expected='{tgt}' line='{ln}'")
+
+        if all(oks):
+            tuned_allok += 1
+
+    base_acc = (base_allok / trials) if trials else 0.0
+    base_per_pos = [(base_pos_ok[i] / trials) if trials else 0.0 for i in range(4)]
+
+    tuned_acc = (tuned_allok / trials) if trials else 0.0
+    tuned_per_pos = [(tuned_pos_ok[i] / trials) if trials else 0.0 for i in range(4)]
+    metrics = {
+        "samples": trials,
+        "base_accuracy_all_ok": base_acc,
+        "tuned_accuracy_all_ok": tuned_acc,
+        "base_per_position_ok_rate": {
+            "base_line1": base_per_pos[0],
+            "base_line2": base_per_pos[1],
+            "base_line3": base_per_pos[2],
+            "base_line4": base_per_pos[3],
+        },
+        "tuned_per_position_ok_rate": {
+            "tuned_line1": tuned_per_pos[0],
+            "tuned_line2": tuned_per_pos[1],
+            "tuned_line3": tuned_per_pos[2],
+            "tuned_line4": tuned_per_pos[3],
+        },
+    }
+
+    LOG.info(f"[test] samples={metrics['samples']} all-ok-acc={metrics['base_accuracy_all_ok']:.3f} "
+             f"per-pos={[round(x, 3) for x in base_per_pos]}")
+    print("\n" + "#" * 90)
+    print("TEST RESULTS (ABAB all-endings accuracy)")
+    print("#" * 90)
+    print(f"Samples: {metrics['samples']}")
+    print(f"All-four OK accuracy BASE: {metrics['base_accuracy_all_ok']:.3f}")
+    print("Per-position OK rates:")
+    print(f"  line1: {metrics['base_per_position_ok_rate']['base_line1']:.3f}")
+    print(f"  line2: {metrics['base_per_position_ok_rate']['base_line2']:.3f}")
+    print(f"  line3: {metrics['base_per_position_ok_rate']['base_line3']:.3f}")
+    print(f"  line4: {metrics['base_per_position_ok_rate']['base_line4']:.3f}")
+    print(f"All-four OK accuracy TUNED: {metrics['tuned_accuracy_all_ok']:.3f}")
+    print("Per-position OK rates:")
+    print(f"  line1: {metrics['tuned_per_position_ok_rate']['tuned_line1']:.3f}")
+    print(f"  line2: {metrics['tuned_per_position_ok_rate']['tuned_line2']:.3f}")
+    print(f"  line3: {metrics['tuned_per_position_ok_rate']['tuned_line3']:.3f}")
+    print(f"  line4: {metrics['tuned_per_position_ok_rate']['tuned_line4']:.3f}")
+
+    return metrics
+
+
 # =========================
 # MAIN
 # =========================
@@ -926,6 +1028,14 @@ def main():
         model = load_tuned_model(dtype)
         run_generation_demo(model, tokenizer, rhyme_bucket, "GENERATION MODE (TUNED MODEL)")
         LOG.info("[done] generate mode finished")
+        return
+
+    if MODE == "test":
+        base_model = load_base_model(dtype)
+        tuned_model = load_tuned_model(dtype)
+        n = TEST_SAMPLES if TEST_SAMPLES is not None else GEN_COUNT
+        run_accuracy_test(base_model=base_model, tuned_model=tuned_model, tokenizer=tokenizer, rhyme_bucket=rhyme_bucket, samples=n)
+        LOG.info("[done] test mode finished")
         return
 
     if MODE != "finetune":
